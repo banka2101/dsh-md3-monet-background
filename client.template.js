@@ -4,8 +4,8 @@
  * Lets the user pick a photo as the Web GUI backdrop, extracts the dominant
  * color with Google's Material Color Utilities (the same Monet pipeline that
  * powers Material You), and stacks a light/dark alias-token palette over the
- * active theme. The image and its extracted seed live in this browser's
- * localStorage; the Host half owns no state.
+ * active theme. The original image and its extracted seed live in this
+ * browser's IndexedDB; the Host half owns no state.
  *
  * Material Color Utilities is vendored below (Apache-2.0); see
  * LICENSE-MATERIAL-COLOR-UTILITIES. The marked line near the top is replaced
@@ -21,7 +21,8 @@ window.__ModuleLoader__.load({
     /* __STATIC_SPECS__ */
 
     const SOURCE = '@local/theme-background';
-    const STORAGE_KEY = 'dsh.theme-background.v1';
+    const LEGACY_STORAGE_KEY = 'dsh.theme-background.v1';
+    const WALLPAPER_DB = 'dsh.theme-background';
     const STORAGE_VERSION = 3;
     const NS = 'theme-background';
     // Target brightness distance from the active theme's end of the scale,
@@ -74,6 +75,7 @@ window.__ModuleLoader__.load({
       'error.read': 'The image could not be read.',
       'error.palette': 'The image is applied, but its colors could not be extracted; the default palette is used.',
       'error.save': 'The image could not be saved in this browser; it stays applied until you reload.',
+      'error.remove': 'The saved image could not be removed; it may reappear when you reload.',
     };
 
     const ZH = {
@@ -108,6 +110,7 @@ window.__ModuleLoader__.load({
       'error.read': '无法读取这张图片。',
       'error.palette': '图片已应用，但无法从中提取颜色，已改用默认色盘。',
       'error.save': '这张图片无法保存在当前浏览器；重新加载页面前仍会生效。',
+      'error.remove': '无法删除已保存的图片，重新加载后可能再次出现。',
     };
 
     const CSS = String.raw`
@@ -397,7 +400,9 @@ body:has(> .tbx-backdrop) [data-composer-card] button[class$="_primary"]{
     function normalizeStored(data) {
       if (data === null || typeof data !== 'object') return null;
       if (data.v !== 1 && data.v !== 2 && data.v !== STORAGE_VERSION) return null;
-      if (typeof data.image !== 'string' || !data.image.startsWith('data:image/')) return null;
+      const validImage = data.image instanceof Blob ? data.image.size > 0
+        : typeof data.image === 'string' && data.image.startsWith('data:image/');
+      if (!validImage) return null;
       if (typeof data.seed !== 'number' || !Number.isFinite(data.seed)) return null;
       const appearance = data.v === STORAGE_VERSION && typeof data.appearance === 'string' &&
         Object.hasOwn(APPEARANCES, data.appearance) ? data.appearance : DEFAULT_STATE.appearance;
@@ -415,67 +420,43 @@ body:has(> .tbx-backdrop) [data-composer-card] button[class$="_primary"]{
       };
     }
 
-    function loadImage(file) {
-      return new Promise((resolve, reject) => {
-        const url = URL.createObjectURL(file);
-        const image = new Image();
-        image.onload = () => {
-          URL.revokeObjectURL(url);
-          resolve(image);
-        };
-        image.onerror = () => {
-          URL.revokeObjectURL(url);
-          reject(new Error('Image decode failed'));
-        };
-        image.src = url;
-      });
-    }
-
-    async function prepareImage(file) {
-      let source;
-      if (typeof createImageBitmap === 'function') {
-        try {
-          source = await createImageBitmap(file);
-        } catch {
-          source = await loadImage(file);
-        }
-      } else {
-        source = await loadImage(file);
-      }
-
-      const sourceWidth = Math.max(1, source.naturalWidth || source.width);
-      const sourceHeight = Math.max(1, source.naturalHeight || source.height);
-      const scale = Math.min(1, 1600 / Math.max(sourceWidth, sourceHeight));
-      const width = Math.max(1, Math.round(sourceWidth * scale));
-      const height = Math.max(1, Math.round(sourceHeight * scale));
-
+    function sampleImage(image, maxEdge) {
+      const scale = Math.min(1, maxEdge / Math.max(image.naturalWidth, image.naturalHeight));
       const canvas = document.createElement('canvas');
-      canvas.width = width;
-      canvas.height = height;
-      const context = canvas.getContext('2d', { alpha: false });
+      canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+      canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+      const context = canvas.getContext('2d', { alpha: false, willReadFrequently: true });
       if (context === null) throw new Error('Canvas is unavailable');
       context.fillStyle = '#ffffff';
-      context.fillRect(0, 0, width, height);
-      context.drawImage(source, 0, 0, width, height);
-      if (typeof source.close === 'function') source.close();
-
-      let dataUrl = canvas.toDataURL('image/webp', 0.78);
-      if (!dataUrl.startsWith('data:image/webp')) dataUrl = canvas.toDataURL('image/jpeg', 0.82);
-
-      const sampleScale = Math.min(1, 160 / Math.max(width, height));
-      const sample = document.createElement('canvas');
-      sample.width = Math.max(1, Math.round(width * sampleScale));
-      sample.height = Math.max(1, Math.round(height * sampleScale));
-      const sampleContext = sample.getContext('2d', { willReadFrequently: true });
-      if (sampleContext === null) throw new Error('Canvas is unavailable');
-      sampleContext.drawImage(canvas, 0, 0, sample.width, sample.height);
-      const pixels = sampleContext.getImageData(0, 0, sample.width, sample.height).data;
-
-      return { dataUrl, width, height, pixels };
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      context.drawImage(image, 0, 0, canvas.width, canvas.height);
+      return context.getImageData(0, 0, canvas.width, canvas.height).data;
     }
 
-    function extensionMime(file) {
-      return typeof file.type === 'string' ? file.type : '';
+    let storageQueue = Promise.resolve();
+
+    function accessWallpaper(mode, operation) {
+      // Preserve the order of writes, removal, and restore during plugin reloads.
+      const result = storageQueue.then(async () => {
+        const db = await new Promise((resolve, reject) => {
+          const request = indexedDB.open(WALLPAPER_DB, 1);
+          request.onupgradeneeded = () => request.result.createObjectStore('wallpaper');
+          request.onsuccess = () => resolve(request.result);
+          request.onerror = () => reject(request.error);
+        });
+        try {
+          return await new Promise((resolve, reject) => {
+            const transaction = db.transaction('wallpaper', mode);
+            const request = operation(transaction.objectStore('wallpaper'));
+            transaction.oncomplete = () => resolve(request.result);
+            transaction.onabort = () => reject(transaction.error ?? new Error('Wallpaper storage was aborted'));
+          });
+        } finally {
+          db.close();
+        }
+      });
+      storageQueue = result.catch(() => {});
+      return result;
     }
 
     return {
@@ -503,6 +484,9 @@ body:has(> .tbx-backdrop) [data-composer-card] button[class$="_primary"]{
         }, 'theme-background: styles');
 
         let tokenDispose = null;
+        let imageBlob = null;
+        let disposed = false;
+        let restored = Promise.resolve();
         const store = {
           ...DEFAULT_STATE,
           busy: false,
@@ -572,7 +556,7 @@ body:has(> .tbx-backdrop) [data-composer-card] button[class$="_primary"]{
         function snapshot() {
           return {
             v: STORAGE_VERSION,
-            image: store.image,
+            image: imageBlob ?? store.image,
             name: store.name,
             seed: store.seed,
             width: store.width,
@@ -582,13 +566,26 @@ body:has(> .tbx-backdrop) [data-composer-card] button[class$="_primary"]{
           };
         }
 
-        function persistNow() {
+        async function persistNow() {
+          const url = store.image;
+          if (url === null) return;
+          const data = snapshot();
           try {
-            if (store.image === null) localStorage.removeItem(STORAGE_KEY);
-            else localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot()));
+            if (imageBlob === null) {
+              localStorage.setItem(LEGACY_STORAGE_KEY, JSON.stringify(data));
+              return;
+            }
+            await accessWallpaper('readwrite', (records) => records.put(data, 'current'));
           } catch (error) {
             console.error(error);
-            publish({ error: tr('error.save') });
+            if (!disposed && store.image === url) publish({ error: tr('error.save') });
+            return;
+          }
+          // The previous version's copy is redundant once the new one has committed.
+          try {
+            localStorage.removeItem(LEGACY_STORAGE_KEY);
+          } catch (error) {
+            console.error(error);
           }
         }
 
@@ -596,53 +593,43 @@ body:has(> .tbx-backdrop) [data-composer-card] button[class$="_primary"]{
           if (store.brightness !== null || wallpaper.naturalWidth === 0 ||
             !wallpaper.complete || wallpaper.getAttribute('src') !== store.image) return;
           try {
-            const canvas = document.createElement('canvas');
-            const scale = Math.min(1, 64 / Math.max(wallpaper.naturalWidth, wallpaper.naturalHeight));
-            canvas.width = Math.max(1, Math.round(wallpaper.naturalWidth * scale));
-            canvas.height = Math.max(1, Math.round(wallpaper.naturalHeight * scale));
-            const context = canvas.getContext('2d', { willReadFrequently: true });
-            if (context === null) return;
-            context.drawImage(wallpaper, 0, 0, canvas.width, canvas.height);
-            const brightness = imageBrightness(context.getImageData(0, 0, canvas.width, canvas.height).data);
+            const brightness = imageBrightness(sampleImage(wallpaper, 64));
             publish({ brightness });
             applyBackground();
-            persistNow();
+            void persistNow();
           } catch (error) {
             console.error(error);
           }
         }
 
-        function readStored() {
+        async function readStored() {
           try {
-            const raw = localStorage.getItem(STORAGE_KEY);
-            if (raw === null) return null;
-            const normalized = normalizeStored(JSON.parse(raw));
-            if (normalized === null) localStorage.removeItem(STORAGE_KEY);
-            return normalized;
+            const data = await accessWallpaper('readonly', (records) => records.get('current'));
+            const normalized = normalizeStored(data);
+            if (normalized !== null) return normalized;
+          } catch (error) {
+            console.error(error);
+          }
+          try {
+            const raw = localStorage.getItem(LEGACY_STORAGE_KEY);
+            return raw === null ? null : normalizeStored(JSON.parse(raw));
           } catch (error) {
             console.error(error);
             return null;
           }
         }
 
-        function applyState(state) {
-          publish(state);
+        function applyState(state, url) {
+          const previousUrl = imageBlob === null ? null : store.image;
+          imageBlob = state.image instanceof Blob ? state.image : null;
+          publish({ ...state, image: imageBlob === null ? state.image : url ?? URL.createObjectURL(imageBlob) });
           applyBackground();
           applyTokens(store);
-        }
-
-        function readAsDataUrl(file) {
-          return new Promise((resolve, reject) => {
-            const reader = new FileReader();
-            reader.onload = () => resolve(String(reader.result));
-            reader.onerror = () => reject(reader.error || new Error('File read failed'));
-            reader.readAsDataURL(file);
-          });
+          if (previousUrl !== null) URL.revokeObjectURL(previousUrl);
         }
 
         function isImageFile(file) {
-          const type = extensionMime(file);
-          if (type.startsWith('image/')) return true;
+          if (file.type.startsWith('image/')) return true;
           return /\.(png|jpe?g|webp|gif|avif|bmp)$/i.test(file.name || '');
         }
 
@@ -660,75 +647,72 @@ body:has(> .tbx-backdrop) [data-composer-card] button[class$="_primary"]{
           const sequence = ++uploadSequence;
           publish({ busy: true, error: '' });
 
-          let prepared;
+          let url = null;
           try {
-            prepared = await prepareImage(file);
-          } catch (error) {
-            console.error(error);
-            try {
-              const dataUrl = await readAsDataUrl(file);
-              if (sequence !== uploadSequence) return;
-              publish({
-                image: dataUrl,
-                name: file.name,
-                seed: 0xff7fc8b6,
-                width: 0,
-                height: 0,
-                brightness: null,
-                busy: false,
-                error: tr('error.palette'),
-              });
-              applyBackground();
-              applyTokens(store);
-              persistNow();
-            } catch (readError) {
-              console.error(readError);
-              if (sequence === uploadSequence) publish({ busy: false, error: tr('error.read') });
-            }
-            return;
-          }
+            // Snapshot the bytes so the active wallpaper also survives moving the source file.
+            const blob = new Blob([await file.arrayBuffer()], { type: file.type });
+            if (sequence !== uploadSequence) return;
+            url = URL.createObjectURL(blob);
+            const image = new Image();
+            image.src = url;
+            await image.decode();
+            await restored;
+            if (sequence !== uploadSequence) return;
 
-          if (sequence !== uploadSequence) return;
-          let seed = 0xff7fc8b6;
-          let paletteFailed = false;
-          try {
-            const extracted = MCU.sourceColorFromImageBytes(prepared.pixels);
-            if (Number.isFinite(extracted)) seed = extracted;
-            else paletteFailed = true;
+            let seed = 0xff7fc8b6;
+            let brightness = null;
+            let paletteFailed = false;
+            try {
+              const pixels = sampleImage(image, 160);
+              brightness = imageBrightness(pixels);
+              const extracted = MCU.sourceColorFromImageBytes(pixels);
+              if (Number.isFinite(extracted)) seed = extracted;
+              else paletteFailed = true;
+            } catch (error) {
+              console.error(error);
+              paletteFailed = true;
+            }
+            applyState({
+              image: blob,
+              name: file.name,
+              seed,
+              width: image.naturalWidth,
+              height: image.naturalHeight,
+              brightness,
+              error: paletteFailed ? tr('error.palette') : '',
+            }, url);
+            url = null; // The active wallpaper now owns this object URL.
+            await persistNow();
+            if (sequence === uploadSequence) publish({ busy: false });
           } catch (error) {
             console.error(error);
-            paletteFailed = true;
+            if (sequence === uploadSequence) publish({ busy: false, error: tr('error.read') });
+          } finally {
+            if (url !== null) URL.revokeObjectURL(url);
           }
-          publish({
-            image: prepared.dataUrl,
-            name: file.name,
-            seed,
-            width: prepared.width,
-            height: prepared.height,
-            brightness: imageBrightness(prepared.pixels),
-            busy: false,
-            error: paletteFailed ? tr('error.palette') : '',
-          });
-          applyBackground();
-          applyTokens(store);
-          persistNow();
         }
 
         function updateAppearance(appearance) {
           publish({ appearance });
           applyBackground();
-          persistNow();
+          void persistNow();
         }
 
-        function removeImage() {
-          uploadSequence += 1;
-          publish({ ...DEFAULT_STATE, busy: false, error: '' });
-          applyBackground();
-          applyTokens(store);
+        async function removeImage() {
+          const sequence = ++uploadSequence;
+          const wasBlob = imageBlob !== null;
+          applyState({ ...DEFAULT_STATE, busy: false, error: '' });
           try {
-            localStorage.removeItem(STORAGE_KEY);
+            localStorage.removeItem(LEGACY_STORAGE_KEY);
           } catch (error) {
             console.error(error);
+            publish({ error: tr('error.remove') });
+          }
+          try {
+            await accessWallpaper('readwrite', (records) => records.delete('current'));
+          } catch (error) {
+            console.error(error);
+            if (wasBlob && sequence === uploadSequence) publish({ error: tr('error.remove') });
           }
         }
 
@@ -971,10 +955,13 @@ body:has(> .tbx-backdrop) [data-composer-card] button[class$="_primary"]{
         }
 
         ctx.effect(() => {
+          disposed = false;
           wallpaper.addEventListener('load', measureLoadedWallpaper);
-          const stored = readStored();
-          if (stored !== null) applyState(stored);
+          restored = readStored().then((stored) => {
+            if (!disposed && stored !== null) applyState(stored);
+          });
           return () => {
+            disposed = true;
             wallpaper.removeEventListener('load', measureLoadedWallpaper);
             uploadSequence += 1;
             if (tokenDispose !== null) {
@@ -985,6 +972,8 @@ body:has(> .tbx-backdrop) [data-composer-card] button[class$="_primary"]{
               setBackdrop(null);
             } catch (error) {
               console.error(error);
+            } finally {
+              if (imageBlob !== null) URL.revokeObjectURL(store.image);
             }
           };
         }, 'theme-background: applied state');

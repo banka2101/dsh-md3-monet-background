@@ -8,7 +8,7 @@
    ```json
    {
      "action": "install_bundle",
-     "target": "github:banka2101/dsh-md3-monet-background#v1.1.1",
+     "target": "github:banka2101/dsh-md3-monet-background#v1.2.0",
      "enabled": true
    }
    ```
@@ -16,10 +16,10 @@
 3. 如果工具不可用，使用 DSH CLI，按实际情况选择 `desktop` 或 `web` 配置。
 
    ```sh
-   dsh plugin --profile desktop add "github:banka2101/dsh-md3-monet-background#v1.1.1"
+   dsh plugin --profile desktop add "github:banka2101/dsh-md3-monet-background#v1.2.0"
    ```
 
-   如果 Git 安装失败，可下载 [发行安装包](https://github.com/banka2101/dsh-md3-monet-background/releases/tag/v1.1.1)，用 `.tgz` 的绝对路径作为 `target` 或 `dsh plugin add` 的参数。已构建的 `client.js` 随仓库和安装包分发，安装无需执行构建脚本。
+   如果 Git 安装失败，可下载 [发行安装包](https://github.com/banka2101/dsh-md3-monet-background/releases/tag/v1.2.0)，用 `.tgz` 的绝对路径作为 `target` 或 `dsh plugin add` 的参数。已构建的 `client.js` 随仓库和安装包分发，安装无需执行构建脚本。
 4. 按安装结果中的 `application`、`warnings` 和 `nextStep` 处理。核对插件已启用，并验证 **设置 → 背景** 能打开。让用户选一张图片即可看到实时预览和 Material You 色盘。
 
 ## 维护
