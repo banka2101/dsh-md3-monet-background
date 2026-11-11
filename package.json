@@ -2,11 +2,11 @@
   "name": "@local/theme-background",
   "version": "1.1.1",
   "type": "module",
-  "description": "Custom background image with a Material You color palette for the DSH Web GUI.",
+  "description": "DeepSeek Harness 自定义全窗背景插件，使用 Google Material Design 3 莫奈取色自动生成浅色与深色主题。",
   "keywords": ["dsh-plugin", "deepseek-harness", "wallpaper", "material-you"],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/banka2101/dsh-theme-background.git"
+    "url": "git+https://github.com/banka2101/dsh-md3-monet-background.git"
   },
   "license": "MIT",
   "engines": {
