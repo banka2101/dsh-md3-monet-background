@@ -6,7 +6,7 @@
 
 ## 安装
 
-在 DSH 打开 **插件 → 添加插件**，输入 `github:banka2101/dsh-theme-background#v1.1.0`，安装后启用。也可以下载 [发行安装包](https://github.com/banka2101/dsh-theme-background/releases/latest)，在同一入口填入 `.tgz` 的完整路径。
+在 DSH 打开 **插件 → 添加插件**，输入 `github:banka2101/dsh-theme-background#v1.1.1`，安装后启用。也可以下载 [发行安装包](https://github.com/banka2101/dsh-theme-background/releases/latest)，在同一入口填入 `.tgz` 的完整路径。
 
 到 **设置 → 背景** 上传图片，选择「阅读优先」「均衡」或「壁纸优先」。
 
@@ -21,6 +21,8 @@
 | 背景设置 | 会话效果 |
 | --- | --- |
 | ![背景设置、显示模式与动态色盘](docs/screenshots/background-settings.png) | ![使用自定义背景的问答会话](docs/screenshots/conversation.png) |
+
+示例背景图片来自 Google、kieed 和 Microsoft Design。
 
 ## Agent README
 

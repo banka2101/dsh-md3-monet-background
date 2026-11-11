@@ -1,6 +1,6 @@
 {
   "name": "@local/theme-background",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "type": "module",
   "description": "Custom background image with a Material You color palette for the DSH Web GUI.",
   "keywords": ["dsh-plugin", "deepseek-harness", "wallpaper", "material-you"],
